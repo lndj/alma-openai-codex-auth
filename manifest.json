@@ -1,0 +1,51 @@
+{
+    "id": "openai-codex-auth",
+    "name": "OpenAI Codex Auth",
+    "version": "1.7.2",
+    "description": "Use ChatGPT Plus/Pro subscription with Alma via OAuth. Multi-account with email, avatar, and quota in settings; dynamic model discovery.",
+    "author": {
+        "name": "Alma Community"
+    },
+    "main": "main.js",
+    "engines": {
+        "alma": "^0.1.0"
+    },
+    "type": "provider",
+    "permissions": [
+        "network:fetch",
+        "network:localhost",
+        "network:domain:auth.openai.com",
+        "network:domain:chatgpt.com",
+        "providers:manage",
+        "notifications"
+    ],
+    "activationEvents": [
+        "onStartup"
+    ],
+    "contributes": {
+        "providers": [
+            {
+                "id": "openai-codex",
+                "name": "OpenAI Codex (ChatGPT)",
+                "authType": "oauth"
+            }
+        ],
+        "commands": [
+            {
+                "id": "openai-codex-auth.login",
+                "title": "Login to ChatGPT (Codex)"
+            },
+            {
+                "id": "openai-codex-auth.logout",
+                "title": "Logout from ChatGPT (Codex)"
+            }
+        ]
+    },
+    "keywords": [
+        "openai",
+        "codex",
+        "chatgpt",
+        "oauth",
+        "gpt-5"
+    ]
+}
