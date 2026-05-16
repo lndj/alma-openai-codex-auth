@@ -400,69 +400,95 @@ async function proxiedRequest(
                 }
             };
 
+            // Fetch spec: Response constructor throws if status is one of the
+            // null-body statuses AND body is non-null. We must pass `null` body
+            // for these (304 is the most common one — getCodexInstructions's
+            // ETag conditional GET hits it routinely).
+            const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+
             transport.on('data', (chunk: Buffer) => {
                 if (bodyClosed) return;
-                if (!headersParsed) {
-                    buffer = Buffer.concat([buffer, chunk]);
-                    const sep = buffer.indexOf(Buffer.from('\r\n\r\n', 'ascii'));
-                    if (sep === -1) return;
-                    headersParsed = true;
-                    const headerBlock = buffer.slice(0, sep).toString('utf-8');
-                    const initialBody = buffer.slice(sep + 4);
-                    buffer = Buffer.alloc(0);
+                try {
+                    if (!headersParsed) {
+                        buffer = Buffer.concat([buffer, chunk]);
+                        const sep = buffer.indexOf(Buffer.from('\r\n\r\n', 'ascii'));
+                        if (sep === -1) return;
+                        headersParsed = true;
+                        const headerBlock = buffer.slice(0, sep).toString('utf-8');
+                        const initialBody = buffer.slice(sep + 4);
+                        buffer = Buffer.alloc(0);
 
-                    let statusCode = 0;
-                    let statusText = '';
-                    const responseHeaders = new Headers();
-                    const lines = headerBlock.split('\r\n');
-                    const statusMatch = lines[0]?.match(/^HTTP\/\d\.\d\s+(\d+)\s*(.*)$/);
-                    if (statusMatch) {
-                        statusCode = parseInt(statusMatch[1], 10);
-                        statusText = statusMatch[2] || '';
-                    }
-                    for (let i = 1; i < lines.length; i++) {
-                        const idx = lines[i].indexOf(':');
-                        if (idx > 0) {
-                            responseHeaders.append(
-                                lines[i].slice(0, idx).trim(),
-                                lines[i].slice(idx + 1).trim(),
-                            );
+                        let statusCode = 0;
+                        let statusText = '';
+                        const responseHeaders = new Headers();
+                        const lines = headerBlock.split('\r\n');
+                        const statusMatch = lines[0]?.match(/^HTTP\/\d\.\d\s+(\d+)\s*(.*)$/);
+                        if (statusMatch) {
+                            statusCode = parseInt(statusMatch[1], 10);
+                            statusText = statusMatch[2] || '';
                         }
-                    }
-
-                    const te = responseHeaders.get('transfer-encoding');
-                    const cl = responseHeaders.get('content-length');
-                    if (te && te.toLowerCase().includes('chunked')) {
-                        bodyMode = 'chunked';
-                        chunkPhase = 'size';
-                    } else if (cl !== null) {
-                        const n = parseInt(cl, 10);
-                        if (!isNaN(n) && n >= 0) {
-                            bodyMode = 'length';
-                            bodyRemaining = n;
+                        for (let i = 1; i < lines.length; i++) {
+                            const idx = lines[i].indexOf(':');
+                            if (idx > 0) {
+                                responseHeaders.append(
+                                    lines[i].slice(0, idx).trim(),
+                                    lines[i].slice(idx + 1).trim(),
+                                );
+                            }
                         }
-                    }
 
-                    if (!resolved) {
-                        resolved = true;
-                        resolve(new Response(bodyStream, {
-                            status: statusCode,
-                            statusText,
-                            headers: responseHeaders,
-                        }));
-                    }
+                        const te = responseHeaders.get('transfer-encoding');
+                        const cl = responseHeaders.get('content-length');
+                        if (te && te.toLowerCase().includes('chunked')) {
+                            bodyMode = 'chunked';
+                            chunkPhase = 'size';
+                        } else if (cl !== null) {
+                            const n = parseInt(cl, 10);
+                            if (!isNaN(n) && n >= 0) {
+                                bodyMode = 'length';
+                                bodyRemaining = n;
+                            }
+                        }
 
-                    if (bodyMode === 'length' && bodyRemaining === 0) {
-                        closeBody();
+                        const nullBody = NULL_BODY_STATUSES.has(statusCode);
+                        if (nullBody) {
+                            // No body allowed — close the stream we built and
+                            // hand a null body to Response.
+                            try { streamController?.close(); } catch { /* noop */ }
+                            bodyClosed = true;
+                        }
+
+                        if (!resolved) {
+                            resolved = true;
+                            resolve(new Response(nullBody ? null : bodyStream, {
+                                status: statusCode,
+                                statusText,
+                                headers: responseHeaders,
+                            }));
+                        }
+
+                        if (nullBody) {
+                            cleanup();
+                            return;
+                        }
+
+                        if (bodyMode === 'length' && bodyRemaining === 0) {
+                            closeBody();
+                            return;
+                        }
+
+                        if (initialBody.length > 0) {
+                            feedBody(initialBody);
+                        }
                         return;
                     }
-
-                    if (initialBody.length > 0) {
-                        feedBody(initialBody);
-                    }
-                    return;
+                    feedBody(chunk);
+                } catch (err) {
+                    // Never let an exception escape into Node's
+                    // uncaughtException — that would crash the plugin host.
+                    if (!resolved) failConnect(err as Error);
+                    else errorBody(err as Error);
                 }
-                feedBody(chunk);
             });
 
             transport.on('end', () => {
