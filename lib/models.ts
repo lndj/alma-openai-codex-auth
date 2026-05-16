@@ -5,6 +5,9 @@
  * Each base model generates reasoning effort variants automatically.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { CodexModelInfo, ReasoningEffort } from './types';
 
 // ============================================================================
@@ -12,6 +15,9 @@ import type { CodexModelInfo, ReasoningEffort } from './types';
 // ============================================================================
 
 let cachedModels: CodexModelInfo[] | null = null;
+
+const MODELS_CACHE_DIR = join(homedir(), '.alma', 'cache', 'codex');
+const MODELS_CACHE_FILE = join(MODELS_CACHE_DIR, 'models.json');
 
 /** Get active model list (cached from API or hardcoded defaults) */
 export function getActiveModels(): CodexModelInfo[] {
@@ -21,6 +27,42 @@ export function getActiveModels(): CodexModelInfo[] {
 /** Set cached models fetched from API */
 export function setCachedModels(models: CodexModelInfo[]): void {
     cachedModels = models;
+}
+
+/**
+ * Persist the latest fetchModels() result to disk so plugin restart can
+ * synchronously prime the cache via loadCachedModelsFromDisk().
+ *
+ * Why this exists: Alma's UI calls the plugin's getModels() (sync) within
+ * a second of activate(), well before any async fetchModels() can complete.
+ * If getModels() returns the hardcoded list at that moment, model IDs that
+ * aren't in the hardcoded list (e.g. gpt-5.5 family) get default
+ * capabilities (reasoning=false, functionCalling=false), which makes Alma
+ * hide the reasoning/tool controls in the picker.
+ *
+ * By reading back the last-known-good fetchModels output at activate time,
+ * we guarantee getModels() returns the correct shape from T+0 — independent
+ * of network, proxy readiness, and async timing.
+ */
+export function saveCachedModelsToDisk(models: CodexModelInfo[]): void {
+    try {
+        if (!existsSync(MODELS_CACHE_DIR)) mkdirSync(MODELS_CACHE_DIR, { recursive: true });
+        writeFileSync(MODELS_CACHE_FILE, JSON.stringify(models), 'utf8');
+    } catch {
+        // Cache failures are non-fatal — we'll just rely on next fetchModels.
+    }
+}
+
+/** Read the last-persisted models list, or null if missing/unreadable. */
+export function loadCachedModelsFromDisk(): CodexModelInfo[] | null {
+    try {
+        if (!existsSync(MODELS_CACHE_FILE)) return null;
+        const parsed = JSON.parse(readFileSync(MODELS_CACHE_FILE, 'utf8'));
+        if (!Array.isArray(parsed) || parsed.length === 0) return null;
+        return parsed as CodexModelInfo[];
+    } catch {
+        return null;
+    }
 }
 
 // ============================================================================

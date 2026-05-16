@@ -17,7 +17,7 @@
 import type { PluginContext, PluginActivation } from 'alma-plugin-api';
 import { TokenStore } from './lib/token-store';
 import { getAuthorizationUrl, exchangeCodeForTokens } from './lib/auth';
-import { getActiveModels, setCachedModels, buildModelsFromApiResponse, getBaseModelId, getReasoningEffort } from './lib/models';
+import { getActiveModels, setCachedModels, buildModelsFromApiResponse, getBaseModelId, getReasoningEffort, loadCachedModelsFromDisk, saveCachedModelsToDisk } from './lib/models';
 import { getCodexInstructions } from './lib/codex-instructions';
 import { addAlmaBridgeMessage } from './lib/alma-codex-bridge';
 import { fetchAccountQuota } from './lib/rate-limits';
@@ -60,6 +60,18 @@ export async function activate(context: PluginContext): Promise<PluginActivation
     const { logger, storage, providers, commands, ui } = context;
 
     logger.info('OpenAI Codex Auth plugin activating...');
+
+    // Synchronously prime the model cache from the last persisted fetchModels
+    // result so getModels() returns the right shape (with capabilities) from
+    // T+0, before Alma's UI first reads it. Without this, models that aren't
+    // in the hardcoded CODEX_MODELS list (e.g. gpt-5.5 family) would render
+    // with default capabilities and the UI would hide reasoning/tool controls
+    // until the async startup fetchModels caught up — too late for the user.
+    const persisted = loadCachedModelsFromDisk();
+    if (persisted) {
+        setCachedModels(persisted);
+        logger.info(`Primed model cache from disk: ${persisted.length} entries`);
+    }
 
     // Resolve proxy URL: env vars first, then Alma's own settings.
     // Plugins don't pick up Alma's proxy automatically because globalThis.fetch
@@ -766,6 +778,7 @@ export async function activate(context: PluginContext): Promise<PluginActivation
                 }
 
                 setCachedModels(models);
+                saveCachedModelsToDisk(models);
                 logger.info(`Fetched and cached ${models.length} models from Codex API`);
 
                 return models.map(model => ({
