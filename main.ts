@@ -582,9 +582,29 @@ export async function activate(context: PluginContext): Promise<PluginActivation
         async initialize() {
             logger.info('Codex provider initialized');
 
-            // Warm quota + profile caches in the background so the settings
-            // page shows fresh data the first time it renders. Non-blocking.
+            // Warm caches in the background. Non-blocking.
+            //
+            // fetchModels is critical here: on plugin restart, in-memory
+            // cachedModels is null so getModels() returns hardcoded fallback.
+            // Alma's persisted /api/models keeps the IDs from the last fetch
+            // (e.g. gpt-5.5 family) but reverts capabilities to whatever
+            // getModels() yields — for IDs that aren't in the hardcoded list,
+            // capabilities collapse to defaults (reasoning=false, fc=false)
+            // and Alma's UI hides reasoning/tool controls. Re-fetching at
+            // startup keeps Alma's persisted capabilities accurate.
+            //
+            // Wait 2s so backgroundProxyPoll has time to inject the proxy
+            // (typical resolution ~500ms after activate).
+            const provider = this;
             void (async () => {
+                await new Promise((r) => setTimeout(r, 2000));
+                try {
+                    await provider.fetchModels();
+                } catch (e) {
+                    logger.warn(
+                        `[codex] startup fetchModels failed; UI may show stale capabilities until next manual refresh: ${e instanceof Error ? e.message : String(e)}`,
+                    );
+                }
                 for (const record of tokenStore.listAccounts()) {
                     await Promise.all([
                         refreshQuotaForAccount(record.id),
